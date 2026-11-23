@@ -6,6 +6,7 @@
 	path = horcrux-ibex/ibex
 	url = https://github.com/lowRISC/ibex.git
 	branch = master
+	ignore = dirty
 [submodule "horcrux-boom/chipyard"]
 	path = horcrux-boom/chipyard
 	url = https://github.com/ucb-bar/chipyard.git
