@@ -1,0 +1,12 @@
+ML-KEM-768 optimized
+cycles keygen 309378 201604
+check pk ok
+check sk ok
+cycles encaps 355871 231762
+check ct ok
+check ss_enc ok
+cycles decaps 505734 335784
+check ss_dec ok
+result PASS
+
+exit 0 after 11 s

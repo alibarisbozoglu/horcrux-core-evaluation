@@ -1,0 +1,24 @@
+[UART] UART0 is here (stdin/stdout).
+== Loading device model file '/mnt/depo/chipyard/generators/testchipip/src/main/resources/dramsim2_ini/DDR3_micron_64M_8B_x4_sg15.ini' == 
+== Loading system model file '/mnt/depo/chipyard/generators/testchipip/src/main/resources/dramsim2_ini/system.ini' == 
+===== MemorySystem 0 =====
+CH. 0 TOTAL_STORAGE : 4096MB | 1 Ranks | 16 Devices per rank
+DRAMSim2 Clock Frequency =666666666Hz, CPU Clock Frequency=500000000Hz
+ML-KEM-768 baseline
+cycles keygen 845843 822702
+check pk ok
+check sk ok
+cycles encaps 1024397 996736
+check ct ok
+check ss_enc ok
+cycles decaps 1260773 1227946
+check ss_dec ok
+result PASS
+*** FAILED *** (tohost = 5)
+[6498695000] %Error: TestHarness.sv:99: Assertion failed in TOP.TestDriver.testHarness: Assertion failed: *** FAILED *** (exit code =          5)
+
+    at SimTSI.scala:21 assert(!error, "*** FAILED *** (exit code = %%d)\n", exit >> 1.U)
+
+%Error: /mnt/depo/chipyard/sims/verilator/generated-src/chipyard.harness.TestHarness.SmallBoomV3HorcruxConfig/gen-collateral/TestHarness.sv:99: Verilog $stop
+Aborting...
+exit 255 after 1810 s

@@ -1,0 +1,5 @@
+`verilator_config
+// HORCRUX RTL is used unchanged; its lint warnings are not ours to fix (-Wall would make them fatal).
+lint_off -file "*HORCRUX*"
+lint_off -rule SELRANGE -file "*HORCRUX*"
+lint_off -rule COMBDLY  -file "*HORCRUX*"

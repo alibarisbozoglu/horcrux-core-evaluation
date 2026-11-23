@@ -1,0 +1,19 @@
+system,config,software,op,cycles,instret,status
+SimpleSystem,small,baseline,keygen,2105487,1395280,PASS KAT
+SimpleSystem,small,baseline,encaps,2371409,1577828,PASS KAT
+SimpleSystem,small,baseline,decaps,2732341,1804578,PASS KAT
+SimpleSystem,maxperf,baseline,keygen,1570734,1395280,PASS KAT
+SimpleSystem,maxperf,baseline,encaps,1763853,1577828,PASS KAT
+SimpleSystem,maxperf,baseline,decaps,2030962,1804578,PASS KAT
+SimpleSystem+HORCRUX,small,baseline,keygen,2105487,1395280,PASS KAT
+SimpleSystem+HORCRUX,small,baseline,encaps,2371409,1577828,PASS KAT
+SimpleSystem+HORCRUX,small,baseline,decaps,2732341,1804578,PASS KAT
+SimpleSystem+HORCRUX,small,optimized,keygen,382163,201604,PASS KAT
+SimpleSystem+HORCRUX,small,optimized,encaps,443271,231762,PASS KAT
+SimpleSystem+HORCRUX,small,optimized,decaps,639273,335784,PASS KAT
+SimpleSystem+HORCRUX,maxperf,baseline,keygen,1570734,1395280,PASS KAT
+SimpleSystem+HORCRUX,maxperf,baseline,encaps,1763853,1577828,PASS KAT
+SimpleSystem+HORCRUX,maxperf,baseline,decaps,2030962,1804578,PASS KAT
+SimpleSystem+HORCRUX,maxperf,optimized,keygen,309378,201604,PASS KAT
+SimpleSystem+HORCRUX,maxperf,optimized,encaps,355871,231762,PASS KAT
+SimpleSystem+HORCRUX,maxperf,optimized,decaps,505734,335784,PASS KAT

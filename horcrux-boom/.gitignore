@@ -1,0 +1,4 @@
+/build/
+/local.env
+/generator/src/main/resources/vsrc/horcrux_rocc.sv
+/generator/target/

@@ -1,0 +1,45 @@
+CAPI=2:
+# HORCRUX RTL (unchanged, from the HORCRUX submodule at the top of the repo; packages first) + horcrux_xif_adapter
+name: "horcrux-ibex:ip:horcrux"
+description: "HORCRUX PQC coprocessor with a plain-port shell for Ibex's coprocessor port"
+filesets:
+  files_rtl:
+    files:
+      - ../../HORCRUX/hw/vendor/x-heep/hw/vendor/openhwgroup_cv32e40x/rtl/include/cv32e40x_pkg.sv
+      - ../../HORCRUX/hw/vendor/x-heep/hw/vendor/openhwgroup_cv32e40x/rtl/if_xif.sv
+      - ../../HORCRUX/hw/ip/coprocessors/include/cv32e40px_core_v_xif_pkg.sv
+      - ../../HORCRUX/hw/ip/coprocessors/include/cv32e40px_pkg.sv
+      - ../../HORCRUX/hw/ip/coprocessors/include/horcrux_pkg.sv
+      - ../../HORCRUX/hw/ip/coprocessors/keccak/pkg_keccak.sv
+      - ../../HORCRUX/hw/ip/coprocessors/keccak/keccak_cu.sv
+      - ../../HORCRUX/hw/ip/coprocessors/keccak/keccak_dp.sv
+      - ../../HORCRUX/hw/ip/coprocessors/keccak/keccak_f.sv
+      - ../../HORCRUX/hw/ip/coprocessors/keccak/keccak_round_constants_gen.sv
+      - ../../HORCRUX/hw/ip/coprocessors/keccak/keccak_round.sv
+      - ../../HORCRUX/hw/ip/coprocessors/barrett.sv
+      - ../../HORCRUX/hw/ip/coprocessors/cbd_eta.sv
+      - ../../HORCRUX/hw/ip/coprocessors/chain_lengths.sv
+      - ../../HORCRUX/hw/ip/coprocessors/commit_stage.sv
+      - ../../HORCRUX/hw/ip/coprocessors/fpr.sv
+      - ../../HORCRUX/hw/ip/coprocessors/horcrux_register.sv
+      - ../../HORCRUX/hw/ip/coprocessors/horcrux.sv
+      - ../../HORCRUX/hw/ip/coprocessors/horcrux_top.sv
+      - ../../HORCRUX/hw/ip/coprocessors/id_stage.sv
+      - ../../HORCRUX/hw/ip/coprocessors/multiplier_tree.sv
+      - ../../HORCRUX/hw/ip/coprocessors/sampler.sv
+      - ../../HORCRUX/hw/ip/coprocessors/shared_multiplication_logic.sv
+      - ../../HORCRUX/hw/ip/coprocessors/sphincs_ops.sv
+      - ../../HORCRUX/hw/ip/coprocessors/unified_mul_32x32.sv
+      - ../rtl/horcrux_xif_adapter.sv
+    file_type: systemVerilogSource
+
+  files_verilator_waiver:
+    files:
+      - horcrux_waiver.vlt
+    file_type: vlt
+
+targets:
+  default:
+    filesets:
+      - tool_verilator ? (files_verilator_waiver)
+      - files_rtl

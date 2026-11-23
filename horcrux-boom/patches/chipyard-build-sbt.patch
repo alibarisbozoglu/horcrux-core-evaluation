@@ -1,0 +1,22 @@
+--- a/build.sbt
++++ b/build.sbt
+@@ -255,7 +255,8 @@
+     "caliptra-aes-acc" -> caliptra_aes,
+     "compress-acc" -> compressacc,
+     "mempress" -> mempress,
+-    "fft-generator" -> fft_generator
++    "fft-generator" -> fft_generator,
++    "horcrux" -> horcrux
+   )
+ 
+   // Discover optional modules if their submodule is initialized
+@@ -557,3 +558,9 @@
+     Test / testOptions += Tests.Argument("-oF")
+   )
+   .settings(scalaTestSettings)
++
++// HORCRUX PQC coprocessor as a RoCC accelerator (horcrux-boom repo, scripts/install.sh)
++lazy val horcrux = withInitCheck((project in file("generators/horcrux")), "horcrux")
++  .dependsOn(rocketchip)
++  .settings(libraryDependencies ++= rocketLibDeps.value)
++  .settings(commonSettings)

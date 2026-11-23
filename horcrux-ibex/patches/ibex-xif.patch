@@ -1,0 +1,485 @@
+diff --git a/examples/simple_system/rtl/ibex_simple_system.sv b/examples/simple_system/rtl/ibex_simple_system.sv
+index 11184df4..7108f361 100644
+--- a/examples/simple_system/rtl/ibex_simple_system.sv
++++ b/examples/simple_system/rtl/ibex_simple_system.sv
+@@ -312,7 +312,16 @@ module ibex_simple_system (
+       .instr_req_shadow_o        (),
+       .instr_addr_shadow_o       (),
+ 
+-      .cheriot_enable_i          (ibex_pkg::IbexMuBiOff)
++      .cheriot_enable_i          (ibex_pkg::IbexMuBiOff),
++
++      .xif_issue_valid_o         (),
++      .xif_issue_ready_i         (1'b0),
++      .xif_issue_instr_o         (),
++      .xif_issue_rs1_o           (),
++      .xif_issue_rs2_o           (),
++      .xif_issue_rs3_o           (),
++      .xif_result_valid_i        (1'b0),
++      .xif_result_data_i         (32'h0)
+     );
+ 
+   // SRAM block for instruction and data storage
+diff --git a/rtl/ibex_core.sv b/rtl/ibex_core.sv
+index 04aac9d0..4fa24725 100644
+--- a/rtl/ibex_core.sv
++++ b/rtl/ibex_core.sv
+@@ -56,7 +56,11 @@ module ibex_core import ibex_pkg::*; import ibex_cheriot_pkg::*; #(
+   // mvendorid: encoding of manufacturer/provider
+   parameter logic [31:0]            CsrMvendorId                = 32'b0,
+   // marchid: encoding of base microarchitecture
+-  parameter logic [31:0]            CsrMimpId                   = 32'b0
++  parameter logic [31:0]            CsrMimpId                   = 32'b0,
++  // Coprocessor port (subset of CORE-V-XIF issue + result), see ibex_id_stage
++  parameter bit                     XifEn                       = 1'b0,
++  parameter logic [31:0]            XifOpcodes                  = 32'h0,
++  parameter logic [31:0]            XifRs3Opcodes               = 32'h0
+ ) (
+   // Clock and Reset
+   input  logic                         clk_i,
+@@ -187,7 +191,17 @@ module ibex_core import ibex_pkg::*; import ibex_cheriot_pkg::*; #(
+   output logic                         alert_minor_o,
+   output logic                         alert_major_internal_o,
+   output logic                         alert_major_bus_o,
+-  output ibex_mubi_t                   core_busy_o
++  output ibex_mubi_t                   core_busy_o,
++
++  // Coprocessor port (XifEn)
++  output logic                         xif_issue_valid_o,
++  input  logic                         xif_issue_ready_i,
++  output logic [31:0]                  xif_issue_instr_o,
++  output logic [31:0]                  xif_issue_rs1_o,
++  output logic [31:0]                  xif_issue_rs2_o,
++  output logic [31:0]                  xif_issue_rs3_o,
++  input  logic                         xif_result_valid_i,
++  input  logic [31:0]                  xif_result_data_i
+ );
+ 
+   localparam int unsigned PMPNumChan    = 3;
+@@ -670,7 +684,10 @@ module ibex_core import ibex_pkg::*; import ibex_cheriot_pkg::*; #(
+     .WritebackStage (WritebackStage),
+     .BranchPredictor(BranchPredictor),
+     .MemECC         (MemECC),
+-    .BaseIsa        (BaseIsa)
++    .BaseIsa        (BaseIsa),
++    .XifEn          (XifEn),
++    .XifOpcodes     (XifOpcodes),
++    .XifRs3Opcodes  (XifRs3Opcodes)
+   ) id_stage_i (
+     .clk_i (clk_i),
+     .rst_ni(rst_ni),
+@@ -856,7 +873,16 @@ module ibex_core import ibex_pkg::*; import ibex_cheriot_pkg::*; #(
+     .cheriot_wb_err_i        (cheriot_wb_err),
+     .cheriot_wb_err_info_i   (cheriot_wb_err_info),
+     .cheriot_branch_req_i    (cheriot_branch_req_spec),
+-    .cheriot_branch_target_i (branch_target_ex_cheriot)
++    .cheriot_branch_target_i (branch_target_ex_cheriot),
++
++    .xif_issue_valid_o ,
++    .xif_issue_ready_i ,
++    .xif_issue_instr_o ,
++    .xif_issue_rs1_o   ,
++    .xif_issue_rs2_o   ,
++    .xif_issue_rs3_o   ,
++    .xif_result_valid_i,
++    .xif_result_data_i
+   );
+ 
+   // for RVFI only
+diff --git a/rtl/ibex_id_stage.sv b/rtl/ibex_id_stage.sv
+index e685bfe9..1848b2f0 100644
+--- a/rtl/ibex_id_stage.sv
++++ b/rtl/ibex_id_stage.sv
+@@ -27,7 +27,12 @@ module ibex_id_stage import ibex_cheriot_pkg::*; #(
+   parameter bit               WritebackStage  = 0,
+   parameter bit               BranchPredictor = 0,
+   parameter bit               MemECC          = 1'b0,
+-  parameter ibex_pkg::base_isa_e BaseIsa      = ibex_pkg::BaseIsaRV32IorCHERIoT
++  parameter ibex_pkg::base_isa_e BaseIsa      = ibex_pkg::BaseIsaRV32IorCHERIoT,
++  // Coprocessor port (subset of CORE-V-XIF issue + result). XifOpcodes / XifRs3Opcodes: bit i set
++  // means major opcode {i, 2'b11} goes to the coprocessor / also reads rs3 (instr[31:27]).
++  parameter bit                  XifEn         = 1'b0,
++  parameter logic [31:0]         XifOpcodes    = 32'h0,
++  parameter logic [31:0]         XifRs3Opcodes = 32'h0
+ ) (
+   input  logic                      clk_i,
+   input  logic                      rst_ni,
+@@ -224,7 +229,17 @@ module ibex_id_stage import ibex_cheriot_pkg::*; #(
+   input  logic                      cheriot_wb_err_i,
+   input  logic [15:0]               cheriot_wb_err_info_i,
+   input  logic                      cheriot_branch_req_i,   // from cheriot EX
+-  input  logic [31:0]               cheriot_branch_target_i
++  input  logic [31:0]               cheriot_branch_target_i,
++
++  // Coprocessor port (XifEn)
++  output logic                      xif_issue_valid_o,
++  input  logic                      xif_issue_ready_i,
++  output logic [31:0]               xif_issue_instr_o,
++  output logic [31:0]               xif_issue_rs1_o,
++  output logic [31:0]               xif_issue_rs2_o,
++  output logic [31:0]               xif_issue_rs3_o,
++  input  logic                      xif_result_valid_i,
++  input  logic [31:0]               xif_result_data_i
+ );
+ 
+   import ibex_pkg::*;
+@@ -287,10 +302,21 @@ module ibex_id_stage import ibex_cheriot_pkg::*; #(
+   logic        rf_ren_a, rf_ren_b;
+   logic        rf_ren_a_dec, rf_ren_b_dec;
+   logic        rf_we_or_load;
++  logic [4:0]  rf_raddr_a_dec;
++
++  // Coprocessor instructions (XifEn)
++  logic        xif_insn;          // instruction in ID goes to the coprocessor
++  logic        xif_rs3_rd;        // read rs3 on port A this cycle
++  logic        xif_done;          // result available
++  logic [31:0] xif_res_data;
++  logic        stall_xif;
+ 
+   // Read enables should only be asserted for valid and legal instructions
+-  assign rf_ren_a = instr_valid_i & ~instr_fetch_err_i & ~illegal_insn_o & rf_ren_a_dec;
+-  assign rf_ren_b = instr_valid_i & ~instr_fetch_err_i & ~illegal_insn_o & rf_ren_b_dec;
++  assign rf_ren_a = instr_valid_i & ~instr_fetch_err_i & ~illegal_insn_o & (rf_ren_a_dec | xif_insn);
++  assign rf_ren_b = instr_valid_i & ~instr_fetch_err_i & ~illegal_insn_o & (rf_ren_b_dec | xif_insn);
++
++  // Port A reads rs3 (instr[31:27]) in the first cycle of a coprocessor instruction that needs it
++  assign rf_raddr_a_o = xif_rs3_rd ? instr_rdata_i[31:27] : rf_raddr_a_dec;
+ 
+   assign rf_ren_a_o = rf_ren_a;
+   assign rf_ren_b_o = rf_ren_b;
+@@ -468,6 +494,7 @@ module ibex_id_stage import ibex_cheriot_pkg::*; #(
+       RF_WD_CSR: rf_wdata_id_o = csr_rdata_i;
+       default:   rf_wdata_id_o = result_ex_i;
+     endcase
++    if (xif_insn) rf_wdata_id_o = xif_res_data;
+   end
+ 
+   /////////////
+@@ -518,7 +545,7 @@ module ibex_id_stage import ibex_cheriot_pkg::*; #(
+     .rf_we_o       (rf_we_dec),
+     .rf_we_or_load_o(rf_we_or_load),
+ 
+-    .rf_raddr_a_o(rf_raddr_a_o),
++    .rf_raddr_a_o(rf_raddr_a_dec),
+     .rf_raddr_b_o(rf_raddr_b_o),
+     .rf_waddr_o  (rf_waddr_id_o),
+     .rf_ren_a_o  (rf_ren_a_dec),
+@@ -604,7 +631,7 @@ module ibex_id_stage import ibex_cheriot_pkg::*; #(
+                               (mret_insn_dec | (csr_mstatus_tw_i & wfi_insn_dec));
+ 
+   assign illegal_insn_o = instr_valid_i &
+-      (illegal_insn_dec | illegal_csr_insn_i | illegal_dret_insn | illegal_umode_insn);
++      ((illegal_insn_dec & ~xif_insn) | illegal_csr_insn_i | illegal_dret_insn | illegal_umode_insn);
+ 
+   assign mem_resp_intg_err = lsu_load_resp_intg_err_i | lsu_store_resp_intg_err_i;
+ 
+@@ -875,6 +902,7 @@ module ibex_id_stage import ibex_cheriot_pkg::*; #(
+     id_fsm_d                = id_fsm_q;
+     rf_we_raw               = rf_we_dec;
+     stall_multdiv           = 1'b0;
++    stall_xif               = 1'b0;
+     stall_jump              = 1'b0;
+     stall_branch            = 1'b0;
+     branch_set_raw_d        = 1'b0;
+@@ -903,6 +931,12 @@ module ibex_id_stage import ibex_cheriot_pkg::*; #(
+                 end
+               end
+             end
++            xif_insn: begin
++              // Coprocessor instruction: issue (after reading rs3 if needed), wait for the result
++              id_fsm_d  = MULTI_CYCLE;
++              rf_we_raw = 1'b0;
++              stall_xif = 1'b1;
++            end
+             multdiv_en_dec: begin
+               // MUL or DIV operation
+               if (~ex_valid_i) begin
+@@ -946,11 +980,15 @@ module ibex_id_stage import ibex_cheriot_pkg::*; #(
+           if(multdiv_en_dec) begin
+             rf_we_raw       = rf_we_dec & ex_valid_i;
+           end
++          if (xif_insn) begin
++            rf_we_raw       = xif_done;
++          end
+ 
+           if (multicycle_done & ready_wb_i) begin
+             id_fsm_d        = FIRST_CYCLE;
+           end else begin
+             stall_multdiv   = multdiv_en_dec;
++            stall_xif       = xif_insn;
+             stall_branch    = branch_in_dec;
+             stall_jump      = jump_in_dec;
+           end
+@@ -971,13 +1009,13 @@ module ibex_id_stage import ibex_cheriot_pkg::*; #(
+ 
+   // Stall ID/EX stage for reason that relates to instruction in ID/EX, update assertion below if
+   // modifying this.
+-  assign stall_id = stall_ld_hz | stall_mem | stall_multdiv | stall_jump | stall_branch;
++  assign stall_id = stall_ld_hz | stall_mem | stall_multdiv | stall_jump | stall_branch | stall_xif;
+ 
+   // Generally illegal instructions have no reason to stall, however they must still stall waiting
+   // for outstanding memory requests so exceptions related to them take priority over the illegal
+   // instruction exception.
+   `ASSERT(IllegalInsnStallMustBeMemStall, illegal_insn_o & stall_id |-> stall_mem &
+-    ~(stall_ld_hz | stall_multdiv | stall_jump | stall_branch))
++    ~(stall_ld_hz | stall_multdiv | stall_jump | stall_branch | stall_xif))
+ 
+   assign instr_done = ~stall_id & ~flush_id & instr_executing;
+ 
+@@ -1000,7 +1038,8 @@ module ibex_id_stage import ibex_cheriot_pkg::*; #(
+ 
+     logic instr_kill;
+ 
+-    assign multicycle_done = (lsu_req_dec | cheriot_lsu_req_dec) ? ~stall_mem : ex_valid_all;
++    assign multicycle_done = xif_insn                             ? xif_done   :
++                             (lsu_req_dec | cheriot_lsu_req_dec) ? ~stall_mem : ex_valid_all;
+ 
+     // Is a memory access ongoing that isn't finishing this cycle
+     assign outstanding_memory_access = (outstanding_load_wb_i | outstanding_store_wb_i) &
+@@ -1132,7 +1171,8 @@ module ibex_id_stage import ibex_cheriot_pkg::*; #(
+     assign expecting_store_resp_o = 1'b0;
+   end else begin : gen_no_stall_mem
+ 
+-    assign multicycle_done = (cheriot_lsu_req_dec | lsu_req_dec) ? lsu_resp_valid_i : ex_valid_all;
++    assign multicycle_done = xif_insn                             ? xif_done         :
++                             (cheriot_lsu_req_dec | lsu_req_dec) ? lsu_resp_valid_i : ex_valid_all;
+ 
+     assign data_req_allowed = instr_first_cycle;
+ 
+@@ -1292,4 +1332,77 @@ module ibex_id_stage import ibex_cheriot_pkg::*; #(
+   `ASSERT_IF(IbexInstrNotCheriot,      !instr_is_cheriot_id_o,  cheriot_enable_i != IbexMuBiOn)
+   `ASSERT_IF(IbexCheriotExecDisabled,  !cheriot_exec_id_o,      cheriot_enable_i != IbexMuBiOn)
+ 
++  ///////////////////////////////////
++  // Coprocessor instructions (XIF) //
++  ///////////////////////////////////
++  // An instruction whose major opcode is selected by XifOpcodes and that the decoder found illegal is
++  // sent to the coprocessor instead of trapping. It is handled like a multi-cycle MUL/DIV:
++  //   cycle 1 (rs3 only): port A reads rs3, latched
++  //   then              : xif_issue_valid with rs1/rs2 (forwarded) and rs3 until xif_issue_ready
++  //   then              : wait for the xif_result_valid pulse (latched, the coprocessor has no
++  //                       result_ready), write rd, done
++  // One instruction in flight. Instructions the coprocessor never accepts stall the core.
++  if (XifEn) begin : g_xif
++    logic [6:0]  opcode;
++    logic        xif_rs3;         // instruction needs rs3
++    logic        xif_rs3_q_valid, xif_issued_q, xif_res_q_valid;
++    logic [31:0] xif_rs3_q, xif_res_q;
++    logic        xif_clear;
++    assign opcode     = instr_rdata_i[6:0];
++    assign xif_insn   = instr_valid_i & ~instr_is_compressed_i & (opcode[1:0] == 2'b11) &
++                        XifOpcodes[opcode[6:2]] & illegal_insn_dec;
++    assign xif_rs3    = XifRs3Opcodes[opcode[6:2]];
++    assign xif_rs3_rd = xif_insn & xif_rs3 & ~xif_rs3_q_valid;
++
++    assign xif_issue_valid_o = xif_insn & instr_executing & ~xif_issued_q &
++                               (~xif_rs3 | xif_rs3_q_valid);
++    assign xif_issue_instr_o = instr_rdata_i;
++    assign xif_issue_rs1_o   = rf_rdata_a_fwd;
++    assign xif_issue_rs2_o   = rf_rdata_b_fwd;
++    assign xif_issue_rs3_o   = xif_rs3_q;
++
++    assign xif_done     = xif_issued_q & (xif_result_valid_i | xif_res_q_valid);
++    assign xif_res_data = xif_res_q_valid ? xif_res_q : xif_result_data_i;
++    assign xif_clear    = ~xif_insn | instr_done;
++
++    always_ff @(posedge clk_i or negedge rst_ni) begin
++      if (!rst_ni) begin
++        xif_rs3_q_valid <= 1'b0;
++        xif_rs3_q       <= '0;
++        xif_issued_q    <= 1'b0;
++        xif_res_q_valid <= 1'b0;
++        xif_res_q       <= '0;
++      end else if (xif_clear) begin
++        xif_rs3_q_valid <= 1'b0;
++        xif_issued_q    <= 1'b0;
++        xif_res_q_valid <= 1'b0;
++      end else begin
++        if (xif_rs3_rd & instr_executing) begin
++          xif_rs3_q_valid <= 1'b1;
++          xif_rs3_q       <= rf_rdata_a_fwd;
++        end
++        if (xif_issue_valid_o & xif_issue_ready_i) begin
++          xif_issued_q <= 1'b1;
++        end
++        if (xif_issued_q & xif_result_valid_i) begin
++          xif_res_q_valid <= 1'b1;
++          xif_res_q       <= xif_result_data_i;
++        end
++      end
++    end
++  end else begin : g_no_xif
++    assign xif_insn          = 1'b0;
++    assign xif_rs3_rd        = 1'b0;
++    assign xif_done          = 1'b0;
++    assign xif_res_data      = '0;
++    assign xif_issue_valid_o = 1'b0;
++    assign xif_issue_instr_o = '0;
++    assign xif_issue_rs1_o   = '0;
++    assign xif_issue_rs2_o   = '0;
++    assign xif_issue_rs3_o   = '0;
++
++    logic unused_xif;
++    assign unused_xif = ^{xif_issue_ready_i, xif_result_valid_i, xif_result_data_i};
++  end
++
+ endmodule
+diff --git a/rtl/ibex_lockstep.sv b/rtl/ibex_lockstep.sv
+index 4bfd2cfb..3aa8abb2 100644
+--- a/rtl/ibex_lockstep.sv
++++ b/rtl/ibex_lockstep.sv
+@@ -605,7 +605,16 @@ module ibex_lockstep import ibex_pkg::*; import ibex_cheriot_pkg::*; #(
+     .alert_minor_o          (shadow_alert_minor),
+     .alert_major_internal_o (shadow_alert_major_internal),
+     .alert_major_bus_o      (shadow_alert_major_bus),
+-    .core_busy_o            (shadow_outputs_d.core_busy)
++    .core_busy_o            (shadow_outputs_d.core_busy),
++
++    .xif_issue_valid_o      (),
++    .xif_issue_ready_i      (1'b0),
++    .xif_issue_instr_o      (),
++    .xif_issue_rs1_o        (),
++    .xif_issue_rs2_o        (),
++    .xif_issue_rs3_o        (),
++    .xif_result_valid_i     (1'b0),
++    .xif_result_data_i      (32'h0)
+   );
+ 
+   // Extract cap data from shadow core's unified cap ECC output (cap in lower REGCAP_W bits)
+diff --git a/rtl/ibex_top.sv b/rtl/ibex_top.sv
+index a1d9b438..4217558f 100644
+--- a/rtl/ibex_top.sv
++++ b/rtl/ibex_top.sv
+@@ -60,7 +60,11 @@ module ibex_top import ibex_pkg::*; import ibex_cheriot_pkg::*; #(
+   // 0 indicates this field is not implemented. Ibex implementers may wish to indicate an
+   // RTL/netlist version here using their own unique encoding (e.g. 32 bits of the git hash of the
+   // implemented commit).
+-  parameter logic [31:0]            CsrMimpId                    = 32'b0
++  parameter logic [31:0]            CsrMimpId                    = 32'b0,
++  // Coprocessor port (subset of CORE-V-XIF issue + result), see ibex_id_stage
++  parameter bit                     XifEn                       = 1'b0,
++  parameter logic [31:0]            XifOpcodes                  = 32'h0,
++  parameter logic [31:0]            XifRs3Opcodes               = 32'h0
+ ) (
+   // Clock and Reset
+   input  logic                                                         clk_i,
+@@ -206,7 +210,17 @@ module ibex_top import ibex_pkg::*; import ibex_cheriot_pkg::*; #(
+ 
+   // Shadow core instruction interface outputs
+   output logic                                                        instr_req_shadow_o,
+-  output logic [31:0]                                                 instr_addr_shadow_o
++  output logic [31:0]                                                 instr_addr_shadow_o,
++
++  // Coprocessor port (XifEn)
++  output logic                         xif_issue_valid_o,
++  input  logic                         xif_issue_ready_i,
++  output logic [31:0]                  xif_issue_instr_o,
++  output logic [31:0]                  xif_issue_rs1_o,
++  output logic [31:0]                  xif_issue_rs2_o,
++  output logic [31:0]                  xif_issue_rs3_o,
++  input  logic                         xif_result_valid_i,
++  input  logic [31:0]                  xif_result_data_i
+ );
+ 
+   localparam bit          Lockstep              = SecureIbex;
+@@ -406,7 +420,10 @@ module ibex_top import ibex_pkg::*; import ibex_cheriot_pkg::*; #(
+     .DmExceptionAddr      (DmExceptionAddr),
+     .CsrMvendorId         (CsrMvendorId),
+     .CsrMimpId            (CsrMimpId),
+-    .BaseIsa              (BaseIsa)
++    .BaseIsa              (BaseIsa),
++    .XifEn                (XifEn),
++    .XifOpcodes           (XifOpcodes),
++    .XifRs3Opcodes        (XifRs3Opcodes)
+   ) u_ibex_core (
+     .clk_i(clk),
+     .rst_ni,
+@@ -523,9 +540,21 @@ module ibex_top import ibex_pkg::*; import ibex_cheriot_pkg::*; #(
+     .alert_minor_o         (core_alert_minor),
+     .alert_major_internal_o(core_alert_major_internal),
+     .alert_major_bus_o     (core_alert_major_bus),
+-    .core_busy_o           (core_busy_d)
++    .core_busy_o           (core_busy_d),
++
++    .xif_issue_valid_o ,
++    .xif_issue_ready_i ,
++    .xif_issue_instr_o ,
++    .xif_issue_rs1_o   ,
++    .xif_issue_rs2_o   ,
++    .xif_issue_rs3_o   ,
++    .xif_result_valid_i,
++    .xif_result_data_i
+   );
+ 
++  // The lockstep shadow core has no coprocessor connection
++  `ASSERT_INIT(IllegalParamXifSecure, !(XifEn && SecureIbex))
++
+   /////////////////////////////////
+   // Register file Instantiation //
+   /////////////////////////////////
+diff --git a/rtl/ibex_top_tracing.sv b/rtl/ibex_top_tracing.sv
+index df76cba8..b3a061a6 100644
+--- a/rtl/ibex_top_tracing.sv
++++ b/rtl/ibex_top_tracing.sv
+@@ -39,7 +39,11 @@ module ibex_top_tracing import ibex_pkg::*; import ibex_cheriot_pkg::*; #(
+   parameter int unsigned DmHaltAddr                = 32'h1A110800,
+   parameter int unsigned DmExceptionAddr           = 32'h1A110808,
+   parameter int unsigned CheriotRevBitmapAddrWidth = 32'd11,
+-  parameter int unsigned CheriotRevBitmapBaseAddr  = 32'h0
++  parameter int unsigned CheriotRevBitmapBaseAddr  = 32'h0,
++  // Coprocessor port (subset of CORE-V-XIF issue + result), see ibex_id_stage
++  parameter bit          XifEn                     = 1'b0,
++  parameter logic [31:0] XifOpcodes                = 32'h0,
++  parameter logic [31:0] XifRs3Opcodes             = 32'h0
+ ) (
+   // Clock and Reset
+   input  logic                                                         clk_i,
+@@ -132,7 +136,17 @@ module ibex_top_tracing import ibex_pkg::*; import ibex_cheriot_pkg::*; #(
+ 
+   // Shadow core instruction interface outputs
+   output logic                                                        instr_req_shadow_o,
+-  output logic [31:0]                                                 instr_addr_shadow_o
++  output logic [31:0]                                                 instr_addr_shadow_o,
++
++  // Coprocessor port (XifEn)
++  output logic                         xif_issue_valid_o,
++  input  logic                         xif_issue_ready_i,
++  output logic [31:0]                  xif_issue_instr_o,
++  output logic [31:0]                  xif_issue_rs1_o,
++  output logic [31:0]                  xif_issue_rs2_o,
++  output logic [31:0]                  xif_issue_rs3_o,
++  input  logic                         xif_result_valid_i,
++  input  logic [31:0]                  xif_result_data_i
+ );
+ 
+   // ibex_tracer relies on the signals from the RISC-V Formal Interface
+@@ -252,7 +266,10 @@ module ibex_top_tracing import ibex_pkg::*; import ibex_cheriot_pkg::*; #(
+     .DmHaltAddr                ( DmHaltAddr                ),
+     .DmExceptionAddr           ( DmExceptionAddr           ),
+     .CheriotRevBitmapAddrWidth ( CheriotRevBitmapAddrWidth ),
+-    .CheriotRevBitmapBaseAddr  ( CheriotRevBitmapBaseAddr  )
++    .CheriotRevBitmapBaseAddr  ( CheriotRevBitmapBaseAddr  ),
++    .XifEn                     ( XifEn                     ),
++    .XifOpcodes                ( XifOpcodes                ),
++    .XifRs3Opcodes             ( XifRs3Opcodes             )
+   ) u_ibex_top (
+     .clk_i,
+     .rst_ni,
+@@ -378,7 +395,16 @@ module ibex_top_tracing import ibex_pkg::*; import ibex_cheriot_pkg::*; #(
+     .data_wdata_intg_shadow_o,
+ 
+     .instr_req_shadow_o,
+-    .instr_addr_shadow_o
++    .instr_addr_shadow_o,
++
++    .xif_issue_valid_o ,
++    .xif_issue_ready_i ,
++    .xif_issue_instr_o ,
++    .xif_issue_rs1_o   ,
++    .xif_issue_rs2_o   ,
++    .xif_issue_rs3_o   ,
++    .xif_result_valid_i,
++    .xif_result_data_i
+   );
+ 
+ `ifdef RVFI

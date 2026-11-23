@@ -1,0 +1,10 @@
+config,software,op,cycles,instret,status
+SmallBoomV3Config,baseline,keygen,845843,822702,PASS KAT
+SmallBoomV3Config,baseline,encaps,1024353,996736,PASS KAT
+SmallBoomV3Config,baseline,decaps,1260493,1227946,PASS KAT
+SmallBoomV3HorcruxConfig,baseline,keygen,845843,822702,PASS KAT
+SmallBoomV3HorcruxConfig,baseline,encaps,1024397,996736,PASS KAT
+SmallBoomV3HorcruxConfig,baseline,decaps,1260773,1227946,PASS KAT
+SmallBoomV3HorcruxConfig,optimized,keygen,375647,229791,PASS KAT
+SmallBoomV3HorcruxConfig,optimized,encaps,424182,270909,PASS KAT
+SmallBoomV3HorcruxConfig,optimized,decaps,594495,389629,PASS KAT

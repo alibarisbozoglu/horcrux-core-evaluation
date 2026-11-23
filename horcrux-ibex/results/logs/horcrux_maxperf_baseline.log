@@ -1,0 +1,12 @@
+ML-KEM-768 baseline
+cycles keygen 1570734 1395280
+check pk ok
+check sk ok
+cycles encaps 1763853 1577828
+check ct ok
+check ss_enc ok
+cycles decaps 2030962 1804578
+check ss_dec ok
+result PASS
+
+exit 0 after 48 s

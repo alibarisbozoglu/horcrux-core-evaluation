@@ -1,0 +1,12 @@
+[submodule "HORCRUX"]
+	path = HORCRUX
+	url = https://github.com/vlsi-lab/HORCRUX.git
+	branch = locket
+[submodule "horcrux-ibex/ibex"]
+	path = horcrux-ibex/ibex
+	url = https://github.com/lowRISC/ibex.git
+	branch = master
+[submodule "horcrux-boom/chipyard"]
+	path = horcrux-boom/chipyard
+	url = https://github.com/ucb-bar/chipyard.git
+	branch = main
