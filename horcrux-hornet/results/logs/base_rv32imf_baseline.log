@@ -1,0 +1,11 @@
+UART: ML-KEM-768 baseline
+UART: cycles keygen 1601350 1394248
+UART: check pk ok
+UART: check sk ok
+UART: cycles encaps 1814013 1576772
+UART: check ct ok
+UART: check ss_enc ok
+UART: cycles decaps 2099179 1803521
+UART: check ss_dec ok
+UART: result PASS
+PASS cycles=5616253 instret=4834864

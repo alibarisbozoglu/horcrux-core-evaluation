@@ -5,8 +5,9 @@
 //   custom1, funct7 = 1_000000 (SETRS3)    -> latch rs1 as third operand of the next R4 instruction (xs1, no xd)
 //   custom1, funct7 = 0_0_f3[2:0]_f2[1:0]  -> HORCRUX R4-type {00000, f2, rs2, rs1, f3, rd, 1101011}, rs3 = latched
 // HORCRUX decodes only opcode/funct3/funct7/funct2, so the register-index fields of the rebuilt word are left 0.
-// HORCRUX is a 32-bit unit: operands are the low 32 bits of the BOOM registers and the 32-bit result is
-// sign-extended (RV64 keeps 32-bit values sign-extended in registers).
+// HORCRUX is a 32-bit unit: operands are the low 32 bits of the core registers and on RV64 the 32-bit result is
+// sign-extended (RV64 keeps 32-bit values sign-extended in registers). Works for RV32 and RV64 tiles
+// (used by horcrux-boom and horcrux-rocket).
 // One instruction in flight: HORCRUX returns exactly one result pulse per instruction and has no result_ready,
 // so the response is held here until the core takes it. BOOM expects a response whenever xd = 1 (also rd = x0).
 package horcrux
@@ -80,7 +81,8 @@ class HorcruxRoCCModuleImp(outer: HorcruxRoCC)(implicit p: Parameters) extends L
   }
   io.resp.valid     := state === sResp
   io.resp.bits.rd   := rd
-  io.resp.bits.data := Cat(Fill(32, data(31)), data)
+  val xLen = io.resp.bits.data.getWidth                  // 32 or 64 (tile XLEN)
+  io.resp.bits.data := (if (xLen > 32) Cat(Fill(xLen - 32, data(31)), data) else data)
   when (io.resp.fire) { state := sIdle }
 
   io.busy      := state =/= sIdle

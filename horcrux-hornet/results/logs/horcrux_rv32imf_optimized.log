@@ -1,0 +1,11 @@
+UART: ML-KEM-768 optimized
+UART: cycles keygen 315194 220041
+UART: check pk ok
+UART: check sk ok
+UART: cycles encaps 360032 253314
+UART: check ct ok
+UART: check ss_enc ok
+UART: cycles decaps 514796 364367
+UART: check ss_dec ok
+UART: result PASS
+PASS cycles=1290303 instret=897577

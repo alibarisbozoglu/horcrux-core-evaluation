@@ -1,0 +1,588 @@
+diff --git a/rtl/core/control_unit.v b/rtl/core/control_unit.v
+index e1493de..f26ed28 100644
+--- a/rtl/core/control_unit.v
++++ b/rtl/core/control_unit.v
+@@ -5,7 +5,10 @@ This module is responsible for generating the necessary control signals for the
+ `include "hornet_defs.vh"
+ 
+ module control_unit #(parameter RV_M = 1,  //M extension: multiply and divide
+-                      parameter RV_F = 1)  //F extension: single-precision floating point
++                      parameter RV_F = 1,  //F extension: single-precision floating point
++                      parameter XIF_EN = 0,                  //coprocessor port
++                      parameter [31:0] XIF_OPCODES = 32'b0,  //bit i: major opcode {i, 2'b11} may go to the coprocessor
++                      parameter [31:0] XIF_RS3_OPCODES = 32'b0) //bit i: those instructions also read rs3 = instr[31:27]
+                     (input [31:0] instr_i,
+                     input        fs_off_i, //mstatus.FS == Off: F instructions are illegal
+                     input  [2:0] frm_i,    //dynamic rounding mode
+@@ -14,7 +17,7 @@ module control_unit #(parameter RV_M = 1,  //M extension: multiply and divide
+                     output reg       ecall_o, ebreak_o, mret_o, fence_i_o,
+                     output reg       rs1_used_o, rs1_fp_o,
+                     output reg       rs2_used_o, rs2_fp_o,
+-                    output reg       rs3_used_o,
++                    output reg       rs3_used_o, rs3_fp_o,
+                     output reg       rd_we_o, rd_fp_o,
+                     output reg [3:0] alu_func_o,
+                     output reg       alu_a_pc_o, alu_b_imm_o,
+@@ -27,7 +30,8 @@ module control_unit #(parameter RV_M = 1,  //M extension: multiply and divide
+                     output reg       fpu_o,
+                     output reg [4:0] fpu_op_o,
+                     output reg [2:0] fpu_rm_o,
+-                    output reg       csr_o, csr_we_o, csr_imm_o);
++                    output reg       csr_o, csr_we_o, csr_imm_o,
++                    output reg       xif_o); //coprocessor instruction
+ 
+ wire [6:0] opcode = instr_i[6:0];
+ wire [2:0] funct3 = instr_i[14:12];
+@@ -76,6 +80,8 @@ begin
+     rs2_used_o     = 1'b0;
+     rs2_fp_o       = 1'b0;
+     rs3_used_o     = 1'b0;
++    rs3_fp_o       = 1'b1;
++    xif_o          = 1'b0;
+     rd_we_o        = 1'b0;
+     rd_fp_o        = 1'b0;
+     alu_func_o     = `ALU_ADD;
+@@ -379,6 +385,17 @@ begin
+         {branch_o, jal_o, jalr_o, load_o, store_o} = 5'b0;
+         {mul_o, div_o, fpu_o, csr_o, csr_we_o} = 5'b0;
+     end
++
++    //coprocessor port: an instruction HORNET does not implement, with a selected major opcode, goes to the
++    //coprocessor (R-type or R4-type operands from the integer file, integer rd) instead of trapping
++    if(!legal && XIF_EN != 0 && opcode[1:0] == 2'b11 && XIF_OPCODES[opcode[6:2]])
++    begin
++        illegal_o = 1'b0;
++        xif_o = 1'b1;
++        {rs1_used_o, rs2_used_o, rd_we_o} = 3'b111;
++        rs3_used_o = XIF_RS3_OPCODES[opcode[6:2]];
++        {rs1_fp_o, rs2_fp_o, rs3_fp_o, rd_fp_o} = 4'b0;
++    end
+ end
+ 
+ endmodule
+diff --git a/rtl/core/ex_stage.v b/rtl/core/ex_stage.v
+index c9ff9f7..65abc6e 100644
+--- a/rtl/core/ex_stage.v
++++ b/rtl/core/ex_stage.v
+@@ -1,7 +1,7 @@
+-// EX: forwarding, ALU, branches, divider, FPU and the EX/MEM register
++// EX: forwarding, ALU, branches, divider, FPU, coprocessor port and the EX/MEM register
+ `include "hornet_defs.vh"
+ 
+-module ex_stage #(parameter RV_M = 1, parameter RV_F = 1)
++module ex_stage #(parameter RV_M = 1, parameter RV_F = 1, parameter XIF_EN = 0)
+                (input             clk_i,
+                 input             rst_ni,
+ 
+@@ -26,6 +26,7 @@ module ex_stage #(parameter RV_M = 1, parameter RV_F = 1)
+                 input             mem_unsigned_i,
+                 input             mul_i, div_i,
+                 input             fpu_i,
++                input             xif_i,
+                 input      [4:0]  fpu_op_i,
+                 input      [2:0]  fpu_rm_i,
+                 input             csr_i, csr_we_i, csr_imm_i,
+@@ -45,6 +46,14 @@ module ex_stage #(parameter RV_M = 1, parameter RV_F = 1)
+                 output     [31:0] redirect_pc_o,
+                 output     [31:0] redirect_pc4_o,
+ 
++                //coprocessor port (XIF_EN): issue with handshake, result as a one-cycle pulse
++                output            xif_issue_valid_o,
++                input             xif_issue_ready_i,
++                output     [31:0] xif_issue_instr_o,
++                output     [31:0] xif_issue_rs1_o, xif_issue_rs2_o, xif_issue_rs3_o,
++                input             xif_result_valid_i,
++                input      [31:0] xif_result_data_i,
++
+                 output reg        valid_o,
+                 output reg [31:0] pc_o,
+                 output reg [31:0] instr_o,
+@@ -104,7 +113,7 @@ wire leave = flush_i || (!hold_i && !busy_o);
+ //operands of a multi-cycle unit, captured in its first cycle
+ reg         started_q;
+ reg  [31:0] cap_a, cap_b, cap_c;
+-wire        start = valid_i && (div_i || fpu_i) && !started_q && !hold_i && !flush_i;
++wire        start = valid_i && (div_i || fpu_i || xif_i) && !started_q && !hold_i && !flush_i;
+ 
+ always @(posedge clk_i or negedge rst_ni)
+ begin
+@@ -181,13 +190,83 @@ begin : NO_FPU
+ end
+ endgenerate
+ 
+-assign busy_o = valid_i && ((div_i && !div_done) || (fpu_i && fpu_multi && !fpu_done));
++//coprocessor port: one instruction in flight. It is offered (with the operands of its first cycle) while
++//the pipeline neither holds nor flushes, so in practice an accepted instruction always retires. The result
++//is used in the cycle it arrives, or latched when EX is held by memory (the coprocessor has no
++//result_ready). Exception: a data bus
++//error of an older load/store can flush EX after the accept; that result is then dropped (drain).
++wire        xif_done;
++wire [31:0] xif_out;
++generate
++if(XIF_EN != 0)
++begin : XIF
++    reg        acc_q, res_q_valid, drain_q;
++    reg [31:0] res_q;
++    wire issue  = valid_i && xif_i && !acc_q && !drain_q && !hold_i && !flush_i;
++    wire acc    = issue && xif_issue_ready_i;
++    wire result = (acc_q || acc) && xif_result_valid_i && !drain_q;
++
++    always @(posedge clk_i or negedge rst_ni)
++    begin
++        if(!rst_ni)
++        begin
++            {acc_q, res_q_valid, drain_q} <= 3'b0;
++            res_q <= 32'b0;
++        end
++        else
++        begin
++            if(drain_q && xif_result_valid_i)
++                drain_q <= 1'b0;
++            if(leave)
++            begin
++                {acc_q, res_q_valid} <= 2'b0;
++                if(flush_i && (acc_q || acc) && !res_q_valid && !result)
++                    drain_q <= 1'b1;
++            end
++            else
++            begin
++                if(acc)
++                    acc_q <= 1'b1;
++                if(result)
++                begin
++                    res_q_valid <= 1'b1;
++                    res_q <= xif_result_data_i;
++                end
++            end
++        end
++    end
++
++    assign xif_issue_valid_o = issue;
++    assign xif_issue_instr_o = instr_i;
++    assign xif_issue_rs1_o   = use_a;
++    assign xif_issue_rs2_o   = use_b;
++    assign xif_issue_rs3_o   = use_c;
++    //the result pulse finishes the instruction in the same cycle (issue does not depend on busy_o: no loop)
++    assign xif_done = res_q_valid || result;
++    assign xif_out  = res_q_valid ? res_q : xif_result_data_i;
++end
++else
++begin : NO_XIF
++    assign xif_issue_valid_o = 1'b0;
++    assign xif_issue_instr_o = 32'b0;
++    assign xif_issue_rs1_o   = 32'b0;
++    assign xif_issue_rs2_o   = 32'b0;
++    assign xif_issue_rs3_o   = 32'b0;
++    assign xif_done = 1'b1;
++    assign xif_out  = 32'b0;
++    wire unused_xif = &{1'b0, xif_issue_ready_i, xif_result_valid_i, xif_result_data_i};
++end
++endgenerate
++
++assign busy_o = valid_i && ((div_i && !div_done) || (fpu_i && fpu_multi && !fpu_done) || (xif_i && !xif_done));
+ 
+ reg [31:0] result;
+ always @*
+ begin
+     if(csr_i)
+         result = csr_imm_i ? imm_i : op_a; //CSR source operand
++    else if(xif_i)
++        result = xif_out;
+     else
+         case(res_sel_i)
+             `RES_PC4: result = pc4;
+diff --git a/rtl/core/hazard_unit.v b/rtl/core/hazard_unit.v
+index 935bac5..a80c972 100644
+--- a/rtl/core/hazard_unit.v
++++ b/rtl/core/hazard_unit.v
+@@ -2,14 +2,14 @@
+ module hazard_unit(//ID
+                    input             id_valid_i,
+                    input      [4:0]  id_rs1_i, id_rs2_i, id_rs3_i,
+-                   input             id_rs1_fp_i, id_rs2_fp_i,
++                   input             id_rs1_fp_i, id_rs2_fp_i, id_rs3_fp_i,
+                    input             id_rs1_used_i, id_rs2_used_i, id_rs3_used_i,
+                    input             id_jal_i,
+                    input      [31:0] id_jal_pc_i,
+                    //EX
+                    input             ex_valid_i,
+                    input      [4:0]  ex_rs1_i, ex_rs2_i, ex_rs3_i,
+-                   input             ex_rs1_fp_i, ex_rs2_fp_i,
++                   input             ex_rs1_fp_i, ex_rs2_fp_i, ex_rs3_fp_i,
+                    input      [4:0]  ex_rd_i,
+                    input             ex_rd_we_i, ex_rd_fp_i,
+                    input             ex_late_i, //result exists only after MEM: load, multiply, CSR read
+@@ -48,7 +48,7 @@ assign hold_o = mem_wait_i || wb_wait_i;
+ wire ex_late = ex_valid_i && ex_rd_we_i && ex_late_i;
+ wire use1 = id_rs1_used_i && ex_rd_i == id_rs1_i && ex_rd_fp_i == id_rs1_fp_i && (id_rs1_fp_i || id_rs1_i != 5'd0);
+ wire use2 = id_rs2_used_i && ex_rd_i == id_rs2_i && ex_rd_fp_i == id_rs2_fp_i && (id_rs2_fp_i || id_rs2_i != 5'd0);
+-wire use3 = id_rs3_used_i && ex_rd_i == id_rs3_i && ex_rd_fp_i;
++wire use3 = id_rs3_used_i && ex_rd_i == id_rs3_i && ex_rd_fp_i == id_rs3_fp_i && (id_rs3_fp_i || id_rs3_i != 5'd0);
+ wire load_use = id_valid_i && ex_late && (use1 || use2 || use3);
+ 
+ wire mem_redirect = mem_redirect_i && !wb_fault_i;
+@@ -102,6 +102,6 @@ endfunction
+ 
+ assign fwd_a_o = fwd(ex_rs1_i, ex_rs1_fp_i);
+ assign fwd_b_o = fwd(ex_rs2_i, ex_rs2_fp_i);
+-assign fwd_c_o = fwd(ex_rs3_i, 1'b1);
++assign fwd_c_o = fwd(ex_rs3_i, ex_rs3_fp_i);
+ 
+ endmodule
+diff --git a/rtl/core/hornet_core.v b/rtl/core/hornet_core.v
+index dbdf39d..c82e612 100644
+--- a/rtl/core/hornet_core.v
++++ b/rtl/core/hornet_core.v
+@@ -3,11 +3,17 @@
+ //   RV_F = 1: F extension (FPU in EX, float register file, fflags/frm/fcsr, mstatus.FS)
+ // Without an extension its instructions raise illegal-instruction exceptions and misa
+ // does not report it; the hardware is not built.
++//   XIF_EN = 1: coprocessor port (a CORE-V-XIF subset: issue and result, no memory access). Instructions with
++//   a major opcode selected in XIF_OPCODES that the core does not implement go to the coprocessor (EX stage)
++//   instead of trapping; XIF_RS3_OPCODES selects the R4-type ones (rs3 = instr[31:27]). XIF_EN = 0: no port.
+ module hornet_core #(parameter RESET_VECTOR = 32'h0000_0000,
+                      parameter MTVEC_RESET  = 32'h0000_0000,
+                      parameter HART_ID      = 32'd0,
+                      parameter RV_M         = 1,
+-                     parameter RV_F         = 1)
++                     parameter RV_F         = 1,
++                     parameter XIF_EN       = 0,
++                     parameter [31:0] XIF_OPCODES     = 32'b0, //bit i: major opcode {i, 2'b11}
++                     parameter [31:0] XIF_RS3_OPCODES = 32'b0)
+ (input         clk_i,
+  input         rst_ni,
+ 
+@@ -35,6 +41,16 @@ module hornet_core #(parameter RESET_VECTOR = 32'h0000_0000,
+  input  [15:0] fast_irq_i,
+  input  [63:0] mtime_i,
+ 
++ //coprocessor port (XIF_EN): one instruction in flight; the result is a one-cycle pulse
++ output        xif_issue_valid_o,
++ input         xif_issue_ready_i,
++ output [31:0] xif_issue_instr_o,
++ output [31:0] xif_issue_rs1_o,
++ output [31:0] xif_issue_rs2_o,
++ output [31:0] xif_issue_rs3_o,
++ input         xif_result_valid_i,
++ input  [31:0] xif_result_data_i,
++
+  //RVFI
+  output        rvfi_valid,
+  output [63:0] rvfi_order,
+@@ -81,7 +97,7 @@ wire [31:0] if_pc, if_instr;
+ 
+ //ID
+ wire [4:0]  rf_rs1, rf_rs2, rf_rs3;
+-wire        rf_rs1_fp, rf_rs2_fp;
++wire        rf_rs1_fp, rf_rs2_fp, rf_rs3_fp;
+ wire [31:0] rf_rs1_data, rf_rs2_data, rf_rs3_data;
+ wire        id_rs1_used, id_rs2_used, id_rs3_used;
+ wire        id_jal;
+@@ -91,7 +107,7 @@ wire [31:0] id_jal_pc;
+ wire        de_valid;
+ wire [31:0] de_pc, de_instr, de_next_pc;
+ wire [4:0]  de_rs1, de_rs2, de_rs3;
+-wire        de_rs1_fp, de_rs2_fp, de_rs1_used, de_rs2_used, de_rs3_used;
++wire        de_rs1_fp, de_rs2_fp, de_rs3_fp, de_rs1_used, de_rs2_used, de_rs3_used;
+ wire [31:0] de_rs1_data, de_rs2_data, de_rs3_data;
+ wire [4:0]  de_rd;
+ wire        de_rd_we, de_rd_fp;
+@@ -101,7 +117,7 @@ wire        de_alu_a_pc, de_alu_b_imm;
+ wire [1:0]  de_res_sel;
+ wire        de_branch, de_jalr, de_load, de_store;
+ wire [1:0]  de_mem_size;
+-wire        de_mem_unsigned, de_mul, de_div, de_fpu;
++wire        de_mem_unsigned, de_mul, de_div, de_fpu, de_xif;
+ wire [4:0]  de_fpu_op;
+ wire [2:0]  de_fpu_rm;
+ wire        de_csr, de_csr_we, de_csr_imm, de_mret, de_fence_i;
+@@ -209,6 +225,7 @@ regfile #(.RV_F(RV_F)) REGFILE
+      .rs3_i(rf_rs3),
+      .rs1_fp_i(rf_rs1_fp),
+      .rs2_fp_i(rf_rs2_fp),
++     .rs3_fp_i(rf_rs3_fp),
+      .rs1_data_o(rf_rs1_data),
+      .rs2_data_o(rf_rs2_data),
+      .rs3_data_o(rf_rs3_data),
+@@ -217,7 +234,8 @@ regfile #(.RV_F(RV_F)) REGFILE
+      .rd_i(wb_rd),
+      .rd_data_i(wb_data));
+ 
+-id_stage #(.RV_M(RV_M), .RV_F(RV_F)) ID_STAGE
++id_stage #(.RV_M(RV_M), .RV_F(RV_F), .XIF_EN(XIF_EN), .XIF_OPCODES(XIF_OPCODES),
++           .XIF_RS3_OPCODES(XIF_RS3_OPCODES)) ID_STAGE
+     (.clk_i(clk_i),
+      .rst_ni(rst_ni),
+      .valid_i(if_valid),
+@@ -233,6 +251,7 @@ id_stage #(.RV_M(RV_M), .RV_F(RV_F)) ID_STAGE
+      .rs3_o(rf_rs3),
+      .rs1_fp_o(rf_rs1_fp),
+      .rs2_fp_o(rf_rs2_fp),
++     .rs3_fp_o(rf_rs3_fp),
+      .rs1_data_i(rf_rs1_data),
+      .rs2_data_i(rf_rs2_data),
+      .rs3_data_i(rf_rs3_data),
+@@ -253,6 +272,7 @@ id_stage #(.RV_M(RV_M), .RV_F(RV_F)) ID_STAGE
+      .rs3_q_o(de_rs3),
+      .rs1_fp_q_o(de_rs1_fp),
+      .rs2_fp_q_o(de_rs2_fp),
++     .rs3_fp_q_o(de_rs3_fp),
+      .rs1_used_q_o(de_rs1_used),
+      .rs2_used_q_o(de_rs2_used),
+      .rs3_used_q_o(de_rs3_used),
+@@ -276,6 +296,7 @@ id_stage #(.RV_M(RV_M), .RV_F(RV_F)) ID_STAGE
+      .mul_o(de_mul),
+      .div_o(de_div),
+      .fpu_o(de_fpu),
++     .xif_o(de_xif),
+      .fpu_op_o(de_fpu_op),
+      .fpu_rm_o(de_fpu_rm),
+      .csr_o(de_csr),
+@@ -295,6 +316,7 @@ hazard_unit HAZARD_UNIT
+      .id_rs3_i(rf_rs3),
+      .id_rs1_fp_i(rf_rs1_fp),
+      .id_rs2_fp_i(rf_rs2_fp),
++     .id_rs3_fp_i(rf_rs3_fp),
+      .id_rs1_used_i(id_rs1_used),
+      .id_rs2_used_i(id_rs2_used),
+      .id_rs3_used_i(id_rs3_used),
+@@ -306,6 +328,7 @@ hazard_unit HAZARD_UNIT
+      .ex_rs3_i(de_rs3),
+      .ex_rs1_fp_i(de_rs1_fp),
+      .ex_rs2_fp_i(de_rs2_fp),
++     .ex_rs3_fp_i(de_rs3_fp),
+      .ex_rd_i(de_rd),
+      .ex_rd_we_i(de_rd_we),
+      .ex_rd_fp_i(de_rd_fp),
+@@ -340,7 +363,7 @@ hazard_unit HAZARD_UNIT
+      .fwd_b_o(fwd_b),
+      .fwd_c_o(fwd_c));
+ 
+-ex_stage #(.RV_M(RV_M), .RV_F(RV_F)) EX_STAGE
++ex_stage #(.RV_M(RV_M), .RV_F(RV_F), .XIF_EN(XIF_EN)) EX_STAGE
+     (.clk_i(clk_i),
+      .rst_ni(rst_ni),
+      .valid_i(de_valid),
+@@ -374,6 +397,7 @@ ex_stage #(.RV_M(RV_M), .RV_F(RV_F)) EX_STAGE
+      .mul_i(de_mul),
+      .div_i(de_div),
+      .fpu_i(de_fpu),
++     .xif_i(de_xif),
+      .fpu_op_i(de_fpu_op),
+      .fpu_rm_i(de_fpu_rm),
+      .csr_i(de_csr),
+@@ -396,6 +420,14 @@ ex_stage #(.RV_M(RV_M), .RV_F(RV_F)) EX_STAGE
+      .redirect_o(ex_redirect),
+      .redirect_pc_o(ex_redirect_pc),
+      .redirect_pc4_o(ex_redirect_pc4),
++     .xif_issue_valid_o(xif_issue_valid_o),
++     .xif_issue_ready_i(xif_issue_ready_i),
++     .xif_issue_instr_o(xif_issue_instr_o),
++     .xif_issue_rs1_o(xif_issue_rs1_o),
++     .xif_issue_rs2_o(xif_issue_rs2_o),
++     .xif_issue_rs3_o(xif_issue_rs3_o),
++     .xif_result_valid_i(xif_result_valid_i),
++     .xif_result_data_i(xif_result_data_i),
+      .valid_o(em_valid),
+      .pc_o(em_pc),
+      .instr_o(em_instr),
+diff --git a/rtl/core/id_stage.v b/rtl/core/id_stage.v
+index 64c41c9..dff8d28 100644
+--- a/rtl/core/id_stage.v
++++ b/rtl/core/id_stage.v
+@@ -1,7 +1,8 @@
+ // ID: decode, operand read, JAL redirect, interrupt tagging and the ID/EX register
+ `include "hornet_defs.vh"
+ 
+-module id_stage #(parameter RV_M = 1, parameter RV_F = 1)
++module id_stage #(parameter RV_M = 1, parameter RV_F = 1,
++                  parameter XIF_EN = 0, parameter [31:0] XIF_OPCODES = 32'b0, parameter [31:0] XIF_RS3_OPCODES = 32'b0)
+                (input             clk_i,
+                 input             rst_ni,
+ 
+@@ -17,7 +18,7 @@ module id_stage #(parameter RV_M = 1, parameter RV_F = 1)
+ 
+                 //register file read
+                 output     [4:0]  rs1_o, rs2_o, rs3_o,
+-                output            rs1_fp_o, rs2_fp_o,
++                output            rs1_fp_o, rs2_fp_o, rs3_fp_o,
+                 input      [31:0] rs1_data_i, rs2_data_i, rs3_data_i,
+ 
+                 //to the hazard unit
+@@ -34,7 +35,7 @@ module id_stage #(parameter RV_M = 1, parameter RV_F = 1)
+                 output reg [31:0] instr_o,
+                 output reg [31:0] next_pc_o,
+                 output reg [4:0]  rs1_q_o, rs2_q_o, rs3_q_o,
+-                output reg        rs1_fp_q_o, rs2_fp_q_o,
++                output reg        rs1_fp_q_o, rs2_fp_q_o, rs3_fp_q_o,
+                 output reg        rs1_used_q_o, rs2_used_q_o, rs3_used_q_o,
+                 output reg [31:0] rs1_data_o, rs2_data_o, rs3_data_o,
+                 output reg [4:0]  rd_o,
+@@ -49,6 +50,7 @@ module id_stage #(parameter RV_M = 1, parameter RV_F = 1)
+                 output reg        mem_unsigned_o,
+                 output reg        mul_o, div_o,
+                 output reg        fpu_o,
++                output reg        xif_o,    //coprocessor instruction
+                 output reg [4:0]  fpu_op_o,
+                 output reg [2:0]  fpu_rm_o,
+                 output reg        csr_o, csr_we_o, csr_imm_o,
+@@ -58,19 +60,20 @@ module id_stage #(parameter RV_M = 1, parameter RV_F = 1)
+                 output reg [31:0] trap_tval_o);
+ 
+ wire        illegal, ecall, ebreak, mret, fence_i;
+-wire        rs1_used, rs1_fp, rs2_used, rs2_fp, rs3_used, rd_we, rd_fp;
++wire        rs1_used, rs1_fp, rs2_used, rs2_fp, rs3_used, rs3_fp, rd_we, rd_fp;
+ wire [3:0]  alu_func;
+ wire        alu_a_pc, alu_b_imm;
+ wire [1:0]  res_sel;
+ wire        branch, jal, jalr, load, store;
+ wire [1:0]  mem_size;
+-wire        mem_unsigned, mul, div, fpu;
++wire        mem_unsigned, mul, div, fpu, xif;
+ wire [4:0]  fpu_op;
+ wire [2:0]  fpu_rm;
+ wire        csr, csr_we, csr_imm;
+ wire [31:0] imm;
+ 
+-control_unit #(.RV_M(RV_M), .RV_F(RV_F)) CTRL_UNIT(.instr_i(instr_i),
++control_unit #(.RV_M(RV_M), .RV_F(RV_F), .XIF_EN(XIF_EN), .XIF_OPCODES(XIF_OPCODES),
++               .XIF_RS3_OPCODES(XIF_RS3_OPCODES)) CTRL_UNIT(.instr_i(instr_i),
+                        .fs_off_i(fs_off_i),
+                        .frm_i(frm_i),
+                        .illegal_o(illegal),
+@@ -83,6 +86,7 @@ control_unit #(.RV_M(RV_M), .RV_F(RV_F)) CTRL_UNIT(.instr_i(instr_i),
+                        .rs2_used_o(rs2_used),
+                        .rs2_fp_o(rs2_fp),
+                        .rs3_used_o(rs3_used),
++                       .rs3_fp_o(rs3_fp),
+                        .rd_we_o(rd_we),
+                        .rd_fp_o(rd_fp),
+                        .alu_func_o(alu_func),
+@@ -103,7 +107,8 @@ control_unit #(.RV_M(RV_M), .RV_F(RV_F)) CTRL_UNIT(.instr_i(instr_i),
+                        .fpu_rm_o(fpu_rm),
+                        .csr_o(csr),
+                        .csr_we_o(csr_we),
+-                       .csr_imm_o(csr_imm));
++                       .csr_imm_o(csr_imm),
++                       .xif_o(xif));
+ 
+ imm_decoder IMM_DEC(.instr_in(instr_i[31:2]), .imm_out(imm));
+ 
+@@ -112,6 +117,7 @@ assign rs2_o    = instr_i[24:20];
+ assign rs3_o    = instr_i[31:27];
+ assign rs1_fp_o = rs1_fp;
+ assign rs2_fp_o = rs2_fp;
++assign rs3_fp_o = rs3_fp;
+ 
+ //an interrupt carrier and a faulting fetch have no side effects
+ wire live = valid_i && !irq_i && !fault_i;
+@@ -166,7 +172,7 @@ begin
+         instr_o <= 32'b0;
+         next_pc_o <= 32'b0;
+         {rs1_q_o, rs2_q_o, rs3_q_o} <= 15'b0;
+-        {rs1_fp_q_o, rs2_fp_q_o} <= 2'b0;
++        {rs1_fp_q_o, rs2_fp_q_o, rs3_fp_q_o} <= 3'b0;
+         {rs1_used_q_o, rs2_used_q_o, rs3_used_q_o} <= 3'b0;
+         {rs1_data_o, rs2_data_o, rs3_data_o} <= 96'b0;
+         rd_o <= 5'b0;
+@@ -178,7 +184,7 @@ begin
+         {branch_o, jalr_o, load_o, store_o} <= 4'b0;
+         mem_size_o <= 2'b0;
+         mem_unsigned_o <= 1'b0;
+-        {mul_o, div_o, fpu_o} <= 3'b0;
++        {mul_o, div_o, fpu_o, xif_o} <= 4'b0;
+         fpu_op_o <= 5'b0;
+         fpu_rm_o <= 3'b0;
+         {csr_o, csr_we_o, csr_imm_o, mret_o, fence_i_o} <= 5'b0;
+@@ -199,6 +205,7 @@ begin
+         rs3_q_o <= rs3_o;
+         rs1_fp_q_o <= rs1_fp;
+         rs2_fp_q_o <= rs2_fp;
++        rs3_fp_q_o <= rs3_fp;
+         rs1_used_q_o <= rs1_used_o;
+         rs2_used_q_o <= rs2_used_o;
+         rs3_used_q_o <= rs3_used_o;
+@@ -222,6 +229,7 @@ begin
+         mul_o <= live && mul;
+         div_o <= live && div;
+         fpu_o <= live && fpu;
++        xif_o <= live && xif;
+         fpu_op_o <= fpu_op;
+         fpu_rm_o <= fpu_rm;
+         csr_o <= live && csr;
+diff --git a/rtl/core/regfile.v b/rtl/core/regfile.v
+index a9eef79..6d3f87c 100644
+--- a/rtl/core/regfile.v
++++ b/rtl/core/regfile.v
+@@ -1,11 +1,12 @@
+ // Integer (x1-x31) and float (f0-f31) register files, one shared write port
+ // RV_F = 0: no float register file, float reads return zero
++// rs3 reads the float file for FMA and the integer file for coprocessor instructions (rs3_fp_i)
+ module regfile #(parameter RV_F = 1)
+               (input         clk_i,
+ 
+                input  [4:0]  rs1_i, rs2_i, rs3_i,
+-               input         rs1_fp_i, rs2_fp_i,
+-               output [31:0] rs1_data_o, rs2_data_o, rs3_data_o, //rs3 is always a float register
++               input         rs1_fp_i, rs2_fp_i, rs3_fp_i,
++               output [31:0] rs1_data_o, rs2_data_o, rs3_data_o,
+ 
+                input         we_i,
+                input         rd_fp_i,
+@@ -63,6 +64,8 @@ assign rs2_data_o = rs2_fp_i ? f_rs2
+                   : rs2_i == 5'd0 ? 32'b0
+                   : (wr_x && rd_i == rs2_i ? rd_data_i : x_bank[rs2_i]);
+ 
+-assign rs3_data_o = f_rs3;
++assign rs3_data_o = rs3_fp_i ? f_rs3
++                  : rs3_i == 5'd0 ? 32'b0
++                  : (wr_x && rd_i == rs3_i ? rd_data_i : x_bank[rs3_i]);
+ 
+ endmodule
+diff --git a/rtl/soc/hornet_soc.v b/rtl/soc/hornet_soc.v
+index 0f67374..7e414c3 100644
+--- a/rtl/soc/hornet_soc.v
++++ b/rtl/soc/hornet_soc.v
+@@ -77,6 +77,9 @@ hornet_core #(.RESET_VECTOR(BOOT_ADDR), .MTVEC_RESET(BOOT_ADDR), .RV_M(RV_M), .R
+      .meip_i(meip_i),
+      .fast_irq_i({irq_i, gpio_irq, uart_irq}),
+      .mtime_i(mtime),
++     .xif_issue_valid_o(), .xif_issue_ready_i(1'b0), .xif_issue_instr_o(),
++     .xif_issue_rs1_o(), .xif_issue_rs2_o(), .xif_issue_rs3_o(),
++     .xif_result_valid_i(1'b0), .xif_result_data_i(32'b0),
+      .rvfi_valid(), .rvfi_order(), .rvfi_insn(), .rvfi_trap(), .rvfi_halt(), .rvfi_intr(),
+      .rvfi_mode(), .rvfi_ixl(), .rvfi_rs1_addr(), .rvfi_rs2_addr(), .rvfi_rs1_rdata(),
+      .rvfi_rs2_rdata(), .rvfi_rd_addr(), .rvfi_rd_wdata(), .rvfi_pc_rdata(), .rvfi_pc_wdata(),
+diff --git a/tb/hornet_tb.sv b/tb/hornet_tb.sv
+index 3365104..7d0e5c1 100644
+--- a/tb/hornet_tb.sv
++++ b/tb/hornet_tb.sv
+@@ -56,6 +56,9 @@ hornet_core #(.RESET_VECTOR(BASE), .MTVEC_RESET(BASE), .RV_M(RV_M), .RV_F(RV_F))
+      .data_rvalid_i(data_rvalid), .data_rdata_i(data_rdata), .data_err_i(data_err),
+      .msip_i(irq_lines[0]), .mtip_i(irq_lines[1]), .meip_i(irq_lines[2]),
+      .fast_irq_i(irq_lines[18:3]), .mtime_i(mtime),
++     .xif_issue_valid_o(), .xif_issue_ready_i(1'b0), .xif_issue_instr_o(),
++     .xif_issue_rs1_o(), .xif_issue_rs2_o(), .xif_issue_rs3_o(),
++     .xif_result_valid_i(1'b0), .xif_result_data_i(32'b0),
+      .rvfi_valid(rvfi_valid), .rvfi_order(rvfi_order), .rvfi_insn(rvfi_insn),
+      .rvfi_trap(rvfi_trap), .rvfi_halt(rvfi_halt), .rvfi_intr(rvfi_intr),
+      .rvfi_mode(rvfi_mode), .rvfi_ixl(rvfi_ixl),
+diff --git a/verif/formal/wrapper.sv b/verif/formal/wrapper.sv
+index b70bb37..60b03d1 100644
+--- a/verif/formal/wrapper.sv
++++ b/verif/formal/wrapper.sv
+@@ -100,6 +100,14 @@ module rvfi_wrapper (
+         .meip_i            (irq[2]),
+         .fast_irq_i        (irq[18:3]),
+         .mtime_i           (mtime),
++        .xif_issue_valid_o (),
++        .xif_issue_ready_i (1'b0),
++        .xif_issue_instr_o (),
++        .xif_issue_rs1_o   (),
++        .xif_issue_rs2_o   (),
++        .xif_issue_rs3_o   (),
++        .xif_result_valid_i(1'b0),
++        .xif_result_data_i (32'b0),
+         .rvfi_valid        (rvfi_valid),
+         .rvfi_order        (rvfi_order),
+         .rvfi_insn         (rvfi_insn),

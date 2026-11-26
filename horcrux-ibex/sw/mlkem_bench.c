@@ -1,4 +1,4 @@
-/* ML-KEM-768 KAT + cycle test for Ibex with / without HORCRUX.
+/* ML-KEM-768 KAT + cycle test with / without HORCRUX (same file in horcrux-ibex/sw and horcrux-hornet/sw).
  * Same flow and test vectors as the HORCRUX repository's main.c (sw/applications/pqc/.../ml-kem-768), with the
  * X-HEEP counter code replaced by mcycle / minstret (bench_counters.h). Output lines:
  *   cycles <op> <cycles> <instret>     op = keygen | encaps | decaps

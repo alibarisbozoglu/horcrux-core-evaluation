@@ -11,3 +11,8 @@
 	path = horcrux-boom/chipyard
 	url = https://github.com/ucb-bar/chipyard.git
 	branch = main
+[submodule "horcrux-hornet/hornet"]
+	path = horcrux-hornet/hornet
+	url = https://github.com/GSTL-ITU/HORNET-RV32IMF.git
+	branch = main
+	ignore = dirty

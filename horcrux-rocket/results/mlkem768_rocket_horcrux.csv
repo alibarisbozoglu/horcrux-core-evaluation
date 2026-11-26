@@ -1,0 +1,19 @@
+config,isa,software,op,cycles,instret,status
+RV32RocketConfig,rv32,baseline,keygen,1715309,1395279,PASS KAT
+RV32RocketConfig,rv32,baseline,encaps,1952176,1577825,PASS KAT
+RV32RocketConfig,rv32,baseline,decaps,2288900,1804576,PASS KAT
+RV32RocketHorcruxConfig,rv32,baseline,keygen,1715309,1395279,PASS KAT
+RV32RocketHorcruxConfig,rv32,baseline,encaps,1952176,1577825,PASS KAT
+RV32RocketHorcruxConfig,rv32,baseline,decaps,2288900,1804576,PASS KAT
+RV32RocketHorcruxConfig,rv32,optimized,keygen,354721,225705,PASS KAT
+RV32RocketHorcruxConfig,rv32,optimized,encaps,403008,259882,PASS KAT
+RV32RocketHorcruxConfig,rv32,optimized,decaps,570229,374513,PASS KAT
+RocketConfig,rv64,baseline,keygen,1041935,822702,PASS KAT
+RocketConfig,rv64,baseline,encaps,1266953,996736,PASS KAT
+RocketConfig,rv64,baseline,decaps,1596196,1227946,PASS KAT
+RocketHorcruxConfig,rv64,baseline,keygen,1041935,822702,PASS KAT
+RocketHorcruxConfig,rv64,baseline,encaps,1266953,996736,PASS KAT
+RocketHorcruxConfig,rv64,baseline,decaps,1596196,1227946,PASS KAT
+RocketHorcruxConfig,rv64,optimized,keygen,358866,229791,PASS KAT
+RocketHorcruxConfig,rv64,optimized,encaps,413416,270909,PASS KAT
+RocketHorcruxConfig,rv64,optimized,decaps,583105,389629,PASS KAT

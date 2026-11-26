@@ -40,6 +40,10 @@ the pipeline drains at every HORCRUX instruction (IPC 0.97 → 0.61).
 | `sw/` | ML-KEM-768 test: `mlkem_bench.c` (KAT + mcycle/minstret), `horcrux_rocc.h` (instruction macros), `port_mlkem.py` (RV32 → RV64 RoCC port of HORCRUX's sources), `bench_chipyard.h`, `build.sh` |
 | `results/` | measured cycles and logs |
 
+The generator is shared with `../horcrux-rocket`, which adds Rocket configs (RV64 and RV32). `HorcruxRoCC`
+sign-extends the 32-bit result to the tile's XLEN (on RV32 this does nothing), and `port_mlkem.py --rv32`
+ports the sources to RoCC without the RV64 changes.
+
 ## How it fits into Chipyard
 
 Chipyard builds Scala generators from `chipyard/generators/<name>`. Optional ones (like `caliptra-aes-acc`) are
